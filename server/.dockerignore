@@ -1,0 +1,38 @@
+# --- Node ---
+node_modules
+npm-debug.log
+yarn-error.log
+pnpm-debug.log
+
+# --- TypeScript build output ---
+dist
+build
+
+# --- Prisma ---
+# Исключаем локальные базы (например, если используешь SQLite)
+*.db
+*.db-journal
+
+# --- Environment / secrets ---
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# --- Git ---
+.git
+.gitignore
+
+# --- Editors / IDEs ---
+.vscode
+.idea
+
+# --- Logs ---
+*.log
+logs
+.debug
+
+# --- Misc ---
+.DS_Store
+.eslintcache

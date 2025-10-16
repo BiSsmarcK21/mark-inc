@@ -1,0 +1,137 @@
+# -----------------------------------------------------------
+# 🧩 mark-inc — docker-compose.yml (DEV)
+# -----------------------------------------------------------
+# Цель: локальная разработка с hot reload через Nginx-прокси.
+# Цепочка запроса: browser → nginx(80) → client(3000) → server(4000) → db(5432)
+# -----------------------------------------------------------
+
+version: "3.9"  # ⚠️ Docker Desktop может ругаться, что `version` устарел — это не критично.
+
+services:
+  # ---------------------------------------------------------
+  # 🐘 PostgreSQL — основная база данных проекта
+  # ---------------------------------------------------------
+  db:
+    image: postgres:16
+    container_name: markinc_db
+    restart: always
+    environment:
+      # Эти параметры должны совпадать с DATABASE_URL в server/.env
+      POSTGRES_USER: mark_inc
+      POSTGRES_PASSWORD: mark_inc_db_password_2025
+      POSTGRES_DB: mark_db
+    ports:
+      - "5438:5432"   # localhost:5438 → контейнер:5432 (для удобного доступа из хоста)
+    volumes:
+      - db_data:/var/lib/postgresql/data  # хранение данных вне контейнера (persist)
+
+  # ---------------------------------------------------------
+  # ⚙️ Backend — Express + TypeScript + Prisma
+  # ---------------------------------------------------------
+  server:
+    build:
+      context: ./server              # корень Dockerfile
+      dockerfile: Dockerfile
+      target: dev                    # 👈 используем dev stage (prod — для деплоя)
+    container_name: markinc_server
+    restart: always
+    ports:
+      - "4000:4000"
+      - "5555:5555"    # 👈 временный проброс для Prisma Studio (DEV ONLY)
+    env_file:
+      - ./server/.env                # содержит DATABASE_URL, PORT, NODE_ENV
+    depends_on:
+      - db                           # ждёт, пока поднимется Postgres
+    volumes:
+      - ./server:/app                # монтируем код проекта внутрь контейнера (hot reload)
+      - /app/node_modules            # исключаем node_modules, чтобы не перетирались зависимости
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+    # 👉 сервер автоматически перезапускается при изменении файлов (через nodemon)
+    # 🔹 Prisma клиент пересоздаётся через `npx prisma generate`
+
+  # ---------------------------------------------------------
+  # 💻 Frontend — Next.js (App Router) + Axios + Sass
+  # ---------------------------------------------------------
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      target: dev                    # multi-stage Dockerfile: dev stage для разработки
+    container_name: markinc_client
+    restart: always
+    env_file:
+      - ./client/.env
+    ports:
+      - "3000:3000"
+    depends_on:
+      - server                       # клиент ждёт API
+    volumes:
+      - ./client:/app                # код проекта (hot reload)
+      - /app/node_modules
+    environment:
+      # ⚠️ Важно! Браузер не знает Docker DNS — только localhost.
+      # Поэтому указываем http://localhost/api → запрос пойдёт через Nginx:80,
+      # а Nginx проксирует /api → server:4000/
+      NEXT_PUBLIC_API_URL: http://localhost/api
+      NODE_ENV: development
+      CHOKIDAR_USEPOLLING: "true"    # для стабильного hot reload под Windows
+      WATCHPACK_POLLING: "true"      # аналогично для macOS
+      NEXT_TELEMETRY_DISABLED: "1"   # отключаем телеметрию Next.js
+
+  # ---------------------------------------------------------
+  # 🌐 Nginx — reverse proxy (client + server)
+  # ---------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: markinc_proxy
+    ports:
+      - "80:80"                      # конечная точка входа: http://localhost
+    volumes:
+      # ⚠️ Монтировать нужно именно файл, не папку.
+      # nginx.dev.conf должен быть полноценным рабочим конфигом Nginx.
+      - ./nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - client
+      - server
+    restart: always
+
+# ---------------------------------------------------------
+# 🗄️ volumes — хранилище данных PostgreSQL вне контейнера
+# ---------------------------------------------------------
+volumes:
+  db_data:
+
+# ---------------------------------------------------------
+# 📘 Подсказки и рекомендации:
+# ---------------------------------------------------------
+# 🧠 Логика проксирования:
+#  - Nginx слушает порт 80 на хосте.
+#  - /api/* → server:4000 (Express API)
+#  - /* → client:3000 (Next.js фронт)
+#  - client обращается к http://localhost/api → Nginx → server
+#
+# 🚀 Запуск проекта:
+#  docker compose down -v
+#  docker compose up --build
+#
+# 🔍 Проверка:
+#  http://localhost                → откроется фронт
+#  curl http://localhost/api/hello → {"message":"Hello from mark-inc server"}
+#
+# 🔧 Частые ошибки:
+#  - ❌ 500 при старте Next.js → нет default export в page/layout.
+#  - ❌ net::ERR_NAME_NOT_RESOLVED → NEXT_PUBLIC_API_URL указывает на http://nginx/api (нужно localhost).
+#  - ❌ 502 / пустая страница → Next не слушает 0.0.0.0 → добавь "-H 0.0.0.0" в dev-скрипт.
+#  - ❌ Prisma ошибка (P1001) → DATABASE_URL должен указывать на db:5432, не localhost.
+#
+# 💡 Продакшен:
+#  - .env файлы не копируются в образы — значения задаются в environment секции.
+#  - NEXT_PUBLIC_API_URL должен указывать на домен (https://mark-inc.ru/api)
+#  - Используется отдельный docker-compose.prod.yml с оптимизированными слоями.
+#
+# ✅ Совет:
+#  При проблемах с hot reload — пересобери client:
+#  docker compose stop client && docker compose up --build client
+# -----------------------------------------------------------
